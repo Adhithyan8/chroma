@@ -407,7 +407,7 @@ class ProteinGraph(nn.Module):
         self.distances = geometry.Distances()
         self.knn = kNN(k_neighbors=num_neighbors)
 
-        self.criterion = criterion
+        self.criterion = "knn"  # hardcoded to knn to make sampling deterministic
         self.random_alpha = random_alpha
         self.random_temperature = random_temperature
         self.random_min_local = random_min_local

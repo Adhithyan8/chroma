@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Layers for integrating Stochastic Differential Equations (SDEs).
-
-
-"""
+"""Layers for integrating Stochastic Differential Equations (SDEs)."""
 
 
 from typing import Callable, Tuple
@@ -55,9 +52,7 @@ def sde_integrate(
             assert T_grid.shape[0] == N + 1
 
         y = y0
-        for t0, t1 in tqdm(
-            zip(T_grid[:-1], T_grid[1:]), total=N, desc="Integrating SDE"
-        ):
+        for t0, t1 in zip(T_grid[:-1], T_grid[1:]):
             t = t0
             dT = t1 - t0
 
