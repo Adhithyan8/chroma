@@ -67,7 +67,9 @@ class GaussianNoiseSchedule:
     """
 
     def __init__(
-        self, log_snr_range: Tuple[float, float] = (-7.0, 13.5), kind: str = "log_snr",
+        self,
+        log_snr_range: Tuple[float, float] = (-7.0, 13.5),
+        kind: str = "log_snr",
     ) -> None:
         super().__init__()
 
@@ -534,7 +536,8 @@ class DiffusionChainCov(nn.Module):
         super().__init__()
 
         self.noise_schedule = GaussianNoiseSchedule(
-            log_snr_range=log_snr_range, kind=noise_schedule,
+            log_snr_range=log_snr_range,
+            kind=noise_schedule,
         )
 
         if covariance_model in ["brownian", "globular"]:
@@ -897,7 +900,7 @@ class DiffusionChainCov(nn.Module):
         if detach_X0:
             X0 = X0.detach()
         Z = self._X_to_Z(X, X0, C, alpha, sigma)
-        U_diffusion = (0.5 * (Z ** 2)).sum([1, 2, 3])
+        U_diffusion = (0.5 * (Z**2)).sum([1, 2, 3])
         return U_diffusion
 
     @validate_XC()
@@ -1040,13 +1043,15 @@ class DiffusionChainCov(nn.Module):
             lambda_t,
             lambda_langevin,
         ) = self._schedule_coefficients(
-            t, inverse_temperature=1 / kT, langevin_isothermal=langevin_isothermal,
+            t,
+            inverse_temperature=1 / kT,
+            langevin_isothermal=langevin_isothermal,
         )
 
         def baoab_step(_x, p, t):
             Z = torch.randn_like(_x)
             c1 = torch.exp(-gamma * dt)
-            c3 = torch.sqrt((1 / lambda_t) * (1 - c1 ** 2))
+            c3 = torch.sqrt((1 / lambda_t) * (1 - c1**2))
 
             # BAOAB scheme
             p_half = p + score_func(t, C, _x) * dt / 2  # B
@@ -1222,6 +1227,146 @@ class DiffusionChainCov(nn.Module):
         }
         return outputs
 
+    def sample_sde_with_grad(
+        self,
+        X0_func: Callable,
+        C: torch.LongTensor,
+        X_init: Optional[torch.Tensor] = None,
+        conditioner: Optional[Callable] = None,
+        N: int = 100,
+        tspan: Tuple[float, float] = (1.0, 0.001),
+        inverse_temperature: float = 1.0,
+        langevin_factor: float = 0.0,
+        langevin_isothermal: bool = True,
+        sde_func: str = "reverse_sde",
+        integrate_func: str = "euler_maruyama",
+        initialize_noise: bool = True,
+        remap_time: bool = False,
+        remove_drift_translate: bool = False,
+        remove_noise_translate: bool = False,
+        align_X0: bool = True,
+    ) -> Dict[str, torch.Tensor]:
+        """Sample from the SDE using a numerical integration scheme.
+
+        This function samples from the stochastic differential equation (SDE) defined
+        by the model using a numerical integration scheme such as Euler-Maruyama or
+        huen. The SDE can be either in the forward or reverse direction. The function
+        also supports optional conditioning on external variables and adding Langevin
+        noise to the SDE dynamics.
+
+        Args:
+            X0_func (Callable): A denoising function that maps `(X, C, t)` to `X0`.
+            C (torch.LongTensor): Conditioner tensor with shape `(num_batch,
+                num_residues)`.
+            X_init (torch.Tensor, optional): Initial state tensor with shape `(num_batch
+                , num_residues, 4 ,3)` or None.
+                If None, a zero tensor will be used as the initial state.
+            conditioner (Callable, optional): A function that transforms X, C, U, t.
+                If None, no conditioning will be applied.
+            N (int): Number of integration steps.
+            tspan (Tuple[float,float]): Time span for integration.
+            inverse_temperature (float): Inverse temperature parameter for SDE.
+            langevin_factor (float): Langevin factor for adding noise to SDE.
+            langevin_isothermal (bool): Whether to use isothermal or adiabatic Langevin
+                 dynamics.
+            sde_func (str): Which SDE function to use ('reverse_sde', 'langevin' or 'ode').
+            integrate_func (str): Which integration function to use ('euler_maruyama'
+                 or 'heun').
+            initialize_noise (bool): Whether to initialize the state with noise.
+            remap_time (bool): Whether to remap the time grid according to the noise
+                 schedule.
+            remove_drift_translate (bool): Whether to remove the net translational
+                 component from the drift term.
+            remove_noise_translate (bool): Whether to remove the net translational
+                 component from the noise term.
+            align_X0 (bool): Whether to Kabsch align X0 with X before computing SDE terms.
+
+        Returns:
+            outputs (Dict[str, torch.Tensor]): A dictionary of output tensors with the
+            following keys:
+                - 'C': The conditioned tensor with shape `(num_batch,num_residues)`.
+                - 'X_sample': The final sampled state tensor with shape `(num_batch,
+                    num_residues ,4 ,3)`.
+                - 'X_trajectory': A list of state tensors along the trajectory with
+                    shape `(num_batch,num_residues ,4 ,3)` each.
+                - 'Xhat_trajectory': A list of transformed state tensors along the
+                    trajectory with shape `(num_batch,num_residues ,4 ,3)` each.
+                - 'Xunc_trajectory': A list of unconstrained state tensors along the
+                    trajectory with shape `(num_batch,num_residues ,4 ,3)` each.
+        """
+
+        # Setup SDE integration
+        integrate_func = sde.sde_integrate_with_grad
+        sde_func = self.sde_funcs[sde_func]
+        T_grid = (
+            self.noise_schedule.linear_logsnr_grid(N=N, tspan=tspan).to(C.device)
+            if remap_time
+            else torch.linspace(tspan[0], tspan[1], N + 1).to(C.device)
+        )
+
+        # Intercept the X0 function for tracking Xt and Xhat
+        Xhat_trajectory = []
+        Xt_trajectory = []
+        U_trajectory = []
+
+        def _X0_func(_X, _C, t):
+            _X0 = X0_func(_X, _C, t)
+            Xt_trajectory.append(_X.detach())
+            Xhat_trajectory.append(_X0.detach())
+            return _X0
+
+        def sdefun(_t, _X):
+            f, gZ = sde_func(
+                _X,
+                _X0_func,
+                C,
+                _t,
+                conditioner=conditioner,
+                inverse_temperature=inverse_temperature,
+                langevin_factor=langevin_factor,
+                langevin_isothermal=langevin_isothermal,
+                align_X0=align_X0,
+            )
+            # Remove net translational component
+            if remove_drift_translate:
+                f = backbone.center_X(f, C)
+            if remove_noise_translate:
+                gZ = backbone.center_X(gZ, C)
+            return f, gZ
+
+        # Initialization
+        if initialize_noise and X_init is not None:
+            X_init = self.forward(X_init, C, t=tspan[0]).detach()
+        elif X_init is None:
+            X_init = torch.zeros(list(C.shape) + [4, 3], device=C.device)
+            X_init = self.forward(X_init, C, t=tspan[0]).detach()
+
+        # Determine output shape via a test forward pass
+        if conditioner:
+            with torch.enable_grad():
+                X_init_test = X_init.clone()
+                X_init_test.requires_grad = True
+                S_test = torch.zeros(C.shape, device=X_init.device).long()
+                O_test = F.one_hot(S_test, len(AA20)).float()
+                U_test = 0.0
+                t_test = torch.tensor([0.0], device=X_init.device)
+                _, Ct, _, _, _ = conditioner(X_init_test, C, O_test, U_test, t_test)
+        else:
+            Ct = C
+
+        # Integrate
+        X_trajectory = integrate_func(sdefun, X_init, tspan, N=N, T_grid=T_grid)
+
+        # Return constrained coordinates
+        outputs = {
+            "C": Ct,
+            "X_sample": Xt_trajectory[-1],
+            "X_trajectory": [Xt_trajectory[-1]] + Xt_trajectory,
+            "Xhat_trajectory": Xhat_trajectory,
+            "Xunc_trajectory": X_trajectory,
+        }
+        return outputs
+
     @torch.no_grad()
     def estimate_pseudoelbo_X(
         self,
@@ -1256,7 +1401,12 @@ class DiffusionChainCov(nn.Module):
         return elbo
 
     def _score_direct(
-        self, Xt, X0_func, C, t, align_X0=True,
+        self,
+        Xt,
+        X0_func,
+        C,
+        t,
+        align_X0=True,
     ):
         X0 = X0_func(Xt, C, t)
 
@@ -1331,7 +1481,10 @@ class DiffusionChainCov(nn.Module):
             return fn_out, eps_J_eps
 
         def flow_gradient(
-            X, X0_func, C, t,
+            X,
+            X0_func,
+            C,
+            t,
         ):
             """Compute the time gradient from the probability flow ODE."""
 
@@ -1343,7 +1496,12 @@ class DiffusionChainCov(nn.Module):
 
         def odefun(_t, _X):
             _t = _t.detach()
-            f = flow_gradient(_X, X0_func, C, _t,)
+            f = flow_gradient(
+                _X,
+                X0_func,
+                C,
+                _t,
+            )
             return f
 
         # foward integration to noise

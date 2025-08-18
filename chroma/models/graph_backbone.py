@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Models for generating protein backbone structure via diffusion.
-"""
+"""Models for generating protein backbone structure via diffusion."""
 
 from types import SimpleNamespace
 from typing import Optional, Tuple, Union
@@ -187,20 +186,29 @@ class GraphBackbone(nn.Module):
         self.sample_sde = lambda C, **kwargs: self.noise_perturb.sample_sde(
             _X0_func, C, **kwargs
         )
+        self.sample_sde_with_grad = (
+            lambda C, **kwargs: self.noise_perturb.sample_sde_with_grad(
+                _X0_func, C, **kwargs
+            )
+        )
         self.sample_baoab = lambda C, **kwargs: self.noise_perturb.sample_baoab(
             _X0_func, C, **kwargs
         )
         self.sample_ode = lambda C, **kwargs: self.noise_perturb.sample_ode(
             _X0_func, C, **kwargs
         )
-        self.estimate_metrics = lambda X, C, **kwargs: self.loss_diffusion.estimate_metrics(
-            _X0_func, X, C, **kwargs
+        self.estimate_metrics = (
+            lambda X, C, **kwargs: self.loss_diffusion.estimate_metrics(
+                _X0_func, X, C, **kwargs
+            )
         )
         self.estimate_elbo = lambda X, C, **kwargs: self.noise_perturb.estimate_elbo(
             _X0_func, X, C, **kwargs
         )
-        self.estimate_pseudoelbo_X = lambda X, C, **kwargs: self.noise_perturb.estimate_pseudoelbo_X(
-            _X0_func, X, C, **kwargs
+        self.estimate_pseudoelbo_X = (
+            lambda X, C, **kwargs: self.noise_perturb.estimate_pseudoelbo_X(
+                _X0_func, X, C, **kwargs
+            )
         )
 
     def _time_features(self, t):
@@ -359,7 +367,7 @@ class GraphBackbone(nn.Module):
                 R_ji_pred, t_ji_pred, X, C, edge_idx, mask_ij
             )
             losses["batch_translate_mse"] = _weighted_avg(
-                t_ij_mse / (self.loss_scale ** 2)
+                t_ij_mse / (self.loss_scale**2)
             )
             losses["batch_rotate_mse"] = _weighted_avg(R_ij_mse)
             losses["batch_transform_mse"] = (

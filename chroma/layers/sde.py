@@ -64,6 +64,47 @@ def sde_integrate(
     return y_trajectory
 
 
+def sde_integrate_with_grad(
+    sde_func: Callable,
+    y0: torch.Tensor,
+    tspan: Tuple,
+    N: int,
+    project_func: Callable = None,
+    T_grid: torch.Tensor = None,
+) -> list:
+    """Integrate an Ito SDE with the Euler-Maruyama method.
+
+    args:
+        sde_func (function): a function that takes in time and y and returns SDE drift and diffusion terms for the evolution of y
+        y0 (torch.tensor): the initial value of y, e.g. a noised protein structure tensor
+        tspan (tuple): a tuple (t_i, t_f) with t_i being the initial time and t_f being the final time for integration
+        N (int): number of integration steps
+
+    returns:
+        y_trajectory (list): a list of snapshots of the evolution of y as the SDE is integrated
+
+    """
+    # Integrate SDE
+    y_trajectory = [y0]
+
+    if T_grid is None:
+        T_grid = torch.linspace(tspan[0], tspan[1], N + 1).to(y0.device)
+    else:
+        assert T_grid.shape[0] == N + 1
+
+    y = y0
+    for t0, t1 in zip(T_grid[:-1], T_grid[1:]):
+        t = t0
+        dT = t1 - t0
+
+        f, gZ = sde_func(t, y)
+        y = y + dT * f + dT.abs().sqrt() * gZ
+        y = y if project_func is None else project_func(t, y)
+
+        y_trajectory.append(y)
+    return y_trajectory
+
+
 def sde_integrate_heun(
     sde_func: Callable,
     y0: torch.Tensor,
